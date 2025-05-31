@@ -1,0 +1,11 @@
+{
+  "1": "New court commitment, also on parole",
+  "2": "New court commitment, also under parole supervision after conditional/statutory release",
+  "3": "Returned by affirmation of sentence",
+  "4": "Returned for parole violation (RPV) without new sentence",
+  "5": "Returned for parole violation (RPV) after conditional/statutory release, without new sentence",
+  "6": "Returned from escape",
+  "7": "Returned from Mental Hygiene institution or DACC (originally under Corrections)",
+  "8": "Returned after absconding from temporary release",
+  "9": "New court commitment, returned after absconding from temporary release"
+}
