@@ -7,9 +7,9 @@ import json
 import re
 import sys
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # LOAD JSON MAPPING FILES (all eight)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 try:
     with open("institution_map.json") as f:
         institution_map = json.load(f)
@@ -125,280 +125,499 @@ def pivot_month_year(ym: str) -> str:
     return f"{1900 + yy_i:04d}-{mm}"
 
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Create output folder if it doesn’t exist
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 output_folder = "csv_decoded"
 os.makedirs(output_folder, exist_ok=True)
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Loop over every raw-formatted CSV
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 for path in glob.glob("csv_raw_formatted/*_rawformatted.csv"):
     # Read all columns as strings
     df = pd.read_csv(path, dtype=str)
 
     # 1) DECODE ReceivingInstitutionCode → Institution
-    df["Institution"] = (
-        clean_unknown(df["ReceivingInstitutionCode"])
-        .map(institution_map)
-        .fillna("Unknown")
-    )
+    if "ReceivingInstitutionCode" in df.columns:
+        df["Institution"] = (
+            clean_unknown(df["ReceivingInstitutionCode"])
+            .map(institution_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["Institution"] = ""
 
     # 2) DECODE CountyCommittedFrom → County
-    df["County"] = (
-        clean_unknown(df["CountyCommittedFrom"])
-        .map(county_map)
-        .fillna("Unknown")
-    )
+    if "CountyCommittedFrom" in df.columns:
+        df["County"] = (
+            clean_unknown(df["CountyCommittedFrom"])
+            .map(county_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["County"] = ""
 
     # 3) DECODE CrimeDetails → Crime
-    raw_crime = df["CrimeDetails"].fillna("")
-    code = raw_crime.str.slice(0, 2).fillna("")
-    degree = raw_crime.str.slice(2, 3).fillna("")
+    if "CrimeDetails" in df.columns:
+        raw_crime = df["CrimeDetails"].fillna("")
+        code = raw_crime.str.slice(0, 2).fillna("")
+        degree = raw_crime.str.slice(2, 3).fillna("")
 
-    def decode_crime_pair(c: str, d: str) -> str:
-        # Any presence of “&” or blank means “Unknown”
-        if not c or not d or "&" in c or "&" in d:
-            return "Unknown"
-        base = crime_map.get(c)
-        if base is None:
-            return "Unknown"
-        # Degree mapping: “0”→3rd, “1”→2nd, “2”→1st, “3”→1st
-        deg_map = {"0": "3rd", "1": "2nd", "2": "1st", "3": "1st"}
-        deg_label = deg_map.get(d)
-        if deg_label is None:
-            return base
-        return f"{base}, degree {deg_label}"
+        def decode_crime_pair(c: str, d: str) -> str:
+            # Any presence of “&” or blank means “Unknown”
+            if not c or not d or "&" in c or "&" in d:
+                return "Unknown"
+            base = crime_map.get(c)
+            if base is None:
+                return "Unknown"
+            # Degree mapping: “0”→3rd, “1”→2nd, “2”→1st, “3”→1st
+            deg_map = {"0": "3rd", "1": "2nd", "2": "1st", "3": "1st"}
+            deg_label = deg_map.get(d)
+            if deg_label is None:
+                return base
+            return f"{base}, degree {deg_label}"
 
-    df["Crime"] = [decode_crime_pair(c, d) for c, d in zip(code, degree)]
+        df["Crime"] = [decode_crime_pair(c, d) for c, d in zip(code, degree)]
+    else:
+        df["Crime"] = ""
 
     # 4) PARSE & PIVOT DATES
-    #  a) DateReceived → parse to “yy-MM-DD” then pivot to “YYYY-MM-DD”
-    df["_RAW_DateReceived"] = df["DateReceived"].apply(lambda x: parse_iso_date(x, "MDDYY"))
-    df["DateReceived"] = df["_RAW_DateReceived"].apply(pivot_date_received)
+    #  a) DateReceived is already “YYYY-MM-DD” from parse_raw_formatter.py; skip re-parsing.
 
     #  b) DateOfBirth → parse to “yy-MM-DD” then pivot with DateReceived
-    df["_RAW_DateOfBirth"] = df["DateOfBirth"].apply(lambda x: parse_iso_date(x, "MDDYY"))
-    df["DateOfBirth"] = [
-        pivot_dob(dob_raw, rec)
-        for dob_raw, rec in zip(df["_RAW_DateOfBirth"], df["DateReceived"])
-    ]
+    if "DateOfBirth" in df.columns and "DateReceived" in df.columns:
+        df["_RAW_DateOfBirth"] = df["DateOfBirth"].apply(lambda x: parse_iso_date(x, "MDDYY"))
+        df["DateOfBirth"] = [
+            pivot_dob(dob_raw, rec)
+            for dob_raw, rec in zip(df["_RAW_DateOfBirth"], df["DateReceived"])
+        ]
+        df.drop(columns=["_RAW_DateOfBirth"], inplace=True)
+    else:
+        df["DateOfBirth"] = ""
 
     #  c) LatestReleaseDate → parse “MYY” to “yy-MM” then pivot to “YYYY-MM”
-    df["_RAW_LatestRelease"] = df["LatestReleaseDate"].apply(lambda x: parse_iso_date(x, "MYY"))
-    df["LatestReleaseDate"] = df["_RAW_LatestRelease"].apply(pivot_month_year)
+    if "LatestReleaseDate" in df.columns:
+        df["_RAW_LatestRelease"] = df["LatestReleaseDate"].apply(lambda x: parse_iso_date(x, "MYY"))
+        df["LatestReleaseDate"] = df["_RAW_LatestRelease"].apply(pivot_month_year)
+        df.drop(columns=["_RAW_LatestRelease"], inplace=True)
+    else:
+        df["LatestReleaseDate"] = ""
 
     #  d) LatestReturnDate → parse “MDDYY” to “yy-MM-DD” then pivot to “YYYY-MM-DD”
-    df["_RAW_LatestReturn"] = df["LatestReturnDate"].apply(lambda x: parse_iso_date(x, "MDDYY"))
-    df["LatestReturnDate"] = df["_RAW_LatestReturn"].apply(pivot_date_received)
+    if "LatestReturnDate" in df.columns:
+        df["_RAW_LatestReturn"] = df["LatestReturnDate"].apply(lambda x: parse_iso_date(x, "MDDYY"))
+        df["LatestReturnDate"] = df["_RAW_LatestReturn"].apply(pivot_date_received)
+        df.drop(columns=["_RAW_LatestReturn"], inplace=True)
+    else:
+        df["LatestReturnDate"] = ""
 
-    # Drop temporary raw-date columns
-    df.drop(columns=["_RAW_DateReceived", "_RAW_DateOfBirth", "_RAW_LatestRelease", "_RAW_LatestReturn"], inplace=True)
+    # 5) DECODE CourtCommittedBy → CourtCommittedByName (per codebook)
+    if "CourtCommittedBy" in df.columns:
+        court_map = {
+            "0": "Transfer from Civil Institution",
+            "1": "Special Sessions – New York City",
+            "2": "County/Supreme Court – General Sessions",
+            "5": "Preliminary Court",
+            "8": "Children’s Court (Family Court after 9/62)",
+            "9": "Court Not Stated"
+        }
+        df["CourtCommittedByName"] = (
+            clean_unknown(df["CourtCommittedBy"])
+            .map(court_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["CourtCommittedByName"] = ""
 
-    # 5) DECODE CourtCommittedBy → CourtCommittedByName (if needed)
-    # If you have a separate JSON for court codes, load & map it similarly. Otherwise skip.
-    # Example inline mapping (fill in actual values if required):
-    court_map = {
-        "1": "Albany County Court",
-        "2": "Erie County Court",
-        "3": "Onondaga County Court",
-        "4": "Westchester County Court",
-        "5": "New York County Court",
-        "6": "Queens County Court",
-        "7": "Kings County Court",
-        "8": "Bronx County Court",
-        "9": "Suffolk County Court",
-        "0": "Unknown"
-    }
-    # Instead of a fixed "Erie County Court", do:
-    df['CourtCommittedByName'] = df['CountyCommittedFrom'].map(lambda c: f"{county_map.get(c, 'Unknown')} County Court")
-
-
-    # 6) DECODE Race → RaceName
-    # Example mapping (fill from your codebook if different):
-    race_map = {
-        "W": "White",
-        "B": "Black",
-        "H": "Hispanic",
-        "A": "Asian/Pacific Islander",
-        "I": "Native American",
-        "O": "Other"
-    }
-    df["RaceName"] = (
-        clean_unknown(df["Race"])
-        .map(race_map)
-        .fillna("Unknown")
-    )
+    # 6) DECODE Race → RaceName (per codebook)
+    if "Race" in df.columns:
+        race_map = {
+            "1": "White",
+            "2": "Black",
+            "3": "Oriental",
+            "4": "American Indian",
+            "5": "Puerto Rican",
+            "6": "Puerto Rican"
+        }
+        df["RaceName"] = (
+            clean_unknown(df["Race"])
+            .map(race_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["RaceName"] = ""
 
     # 7) AgeAtCommitment remains as a string (or convert to int if desired)
-    df["AgeAtCommitment"] = df["AgeAtCommitment"].apply(lambda x: x if pd.notna(x) else "")
+    df["AgeAtCommitment"] = df["AgeAtCommitment"].apply(lambda x: x if "AgeAtCommitment" in df.columns and pd.notna(x) else "")
 
-    # 8) DECODE Religion → ReligionName
-    df["ReligionName"] = (
-        clean_unknown(df["Religion"])
-        .map(religion_map)
-        .fillna("Unknown")
-    )
+    # 8) DECODE Religion → ReligionName (via religion_map.json)
+    if "Religion" in df.columns:
+        df["ReligionName"] = (
+            clean_unknown(df["Religion"])
+            .map(religion_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["ReligionName"] = ""
 
-    # 9) DECODE Sex → SexName
-    df["SexName"] = (
-        clean_unknown(df["Sex"])
-        .map(sex_map)
-        .fillna("Unknown")
-    )
+    # 9) DECODE Sex → SexName (via sex_map.json)
+    if "Sex" in df.columns:
+        df["SexName"] = (
+            clean_unknown(df["Sex"])
+            .map(sex_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["SexName"] = ""
 
-    # 10) IdentifierNumber and CheckDigit can remain raw strings
-    df["IdentifierNumber"] = df["IdentifierNumber"].fillna("")
-    df["CheckDigit"] = df["CheckDigit"].fillna("")
+    # 10) IdentifierNumber and CheckDigit can remain raw strings (if present)
+    df["IdentifierNumber"] = df["IdentifierNumber"].fillna("") if "IdentifierNumber" in df.columns else ""
+    df["CheckDigit"] = df["CheckDigit"].fillna("") if "CheckDigit" in df.columns else ""
 
     # 11) DECODE YearsResidenceNY (numeric) → leave as-is or convert
-    df["YearsResidenceNY"] = df["YearsResidenceNY"].apply(lambda x: x if pd.notna(x) else "")
+    if "YearsResidenceNY" in df.columns:
+        df["YearsResidenceNY"] = df["YearsResidenceNY"].apply(lambda x: x if pd.notna(x) else "")
+    else:
+        df["YearsResidenceNY"] = ""
 
-    # 12) DECODE MilitaryService → “Yes”/“No”
-    df["MilitaryServiceYN"] = (
-        df["MilitaryService"]
-        .fillna("")
-        .map({"Y": "Yes", "N": "No"})
-        .fillna("Unknown")
-    )
+    # 12) DECODE MilitaryService → MilitaryServiceLabel (per codebook)
+    if "MilitaryService" in df.columns:
+        mil_map = {
+            "0": "No military service",
+            "1": "Military – honorable/general discharge",
+            "2": "Military – discharged for mental disability",
+            "3": "Military – discharged as undesirable (BCD/BCI)",
+            "4": "Military – dishonorable discharge",
+            "5": "Military – discharged as minor",
+            "6": "Military – type not stated",
+            "7": "Military – now in reserves",
+            "8": "Military – active/AWOL",
+            "9": "Military – not stated"
+        }
+        df["MilitaryServiceLabel"] = (
+            clean_unknown(df["MilitaryService"])
+            .map(mil_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["MilitaryServiceLabel"] = ""
 
-    # 13) DECODE Education → EducationLevel (if you have a JSON, load & map)
-    # For now, leave raw or create an edu_map.json and replace:
-    df["EducationLevel"] = df["Education"].apply(lambda x: x if pd.notna(x) else "")
+    # 13) DECODE Education → EducationLevel (per codebook)
+    if "Education" in df.columns:
+        edu_map = {
+            "0": "Not stated",
+            "1": "Illiterate/<3rd grade",
+            "2": "Special/Remedial classes",
+            "3": "3rd grade",
+            "4": "4th grade",
+            "5": "5th grade",
+            "6": "6th grade",
+            "7": "7th grade",
+            "8": "8th grade",
+            "9": "9th grade",
+            "A": "10th grade",
+            "B": "11th grade",
+            "C": "12th grade",
+            "E": "High school equivalency",
+            "H": "High school graduate",
+            "L": "Some college",
+            "G": "College graduate",
+            "M": "Master’s/Doctorate",
+            "P": "Business college",
+            "Q": "Technical institution",
+            "R": "Other beyond high school"
+        }
+        df["EducationLevel"] = (
+            clean_unknown(df["Education"])
+            .map(edu_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["EducationLevel"] = ""
 
-    # 14) Occupation (raw code) → OccupationCode
-    df["OccupationCode"] = df["Occupation"].apply(lambda x: x if pd.notna(x) else "")
+    # 14) DECODE Occupation → OccupationName (per codebook)
+    if "Occupation" in df.columns:
+        occ_map = {
+            "0": "Professional",
+            "1": "Semi-professional",
+            "2": "Manager/Official/Proprietor",
+            "3": "Clerical",
+            "4": "Sales worker",
+            "5": "Craftsman/Foreman",
+            "6": "Operative/Mechanic",
+            "7": "Service worker",
+            "8": "Laborer",
+            "9": "Not stated/Unemployed/Housewife/Student"
+        }
+        df["OccupationName"] = (
+            clean_unknown(df["Occupation"])
+            .map(occ_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["OccupationName"] = ""
 
-    # 15) NarcoticsUse → “Yes”/“No”
-    df["NarcoticsUseYN"] = (
-        df["NarcoticsUse"]
-        .fillna("")
-        .map({"Y": "Yes", "N": "No"})
-        .fillna("Unknown")
-    )
+    # 15) DECODE NarcoticsUse → NarcoticsUseLabel (per codebook)
+    if "NarcoticsUse" in df.columns:
+        narc_map = {
+            "1": "Uses narcotics",
+            "2": "Does not use narcotics",
+            "4": "Denies, but suspected",
+            "9": "Not stated whether uses"
+        }
+        df["NarcoticsUseLabel"] = (
+            clean_unknown(df["NarcoticsUse"])
+            .map(narc_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["NarcoticsUseLabel"] = ""
 
-    # 16) MaritalStatus → MaritalStatusCode (or map if you have a JSON)
-    df["MaritalStatusCode"] = df["MaritalStatus"].apply(lambda x: x if pd.notna(x) else "")
+    # 16) DECODE MaritalStatus → MaritalStatusName (per codebook)
+    if "MaritalStatus" in df.columns:
+        mar_map = {
+            "0": "Single",
+            "1": "Married",
+            "2": "Divorced/Annulled",
+            "3": "Widowed",
+            "4": "Separated",
+            "6": "Common-law",
+            "9": "Not stated"
+        }
+        df["MaritalStatusName"] = (
+            clean_unknown(df["MaritalStatus"])
+            .map(mar_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["MaritalStatusName"] = ""
 
-    # 17) PrevCriminalRecord → “Yes”/“No”
-    df["PrevCriminalRecordYN"] = (
-        df["PrevCriminalRecord"]
-        .fillna("")
-        .map({"Y": "Yes", "N": "No"})
-        .fillna("Unknown")
-    )
+    # 17) DECODE PrevCriminalRecord → PrevCriminalRecordLabel (per codebook)
+    if "PrevCriminalRecord" in df.columns:
+        prev_map = {
+            "0": "No prior adult record",
+            "1": "No prior adult conviction (dismissal)",
+            "2": "No prior institutional commitment",
+            "3": "Local jail/penitentiary only",
+            "4": "State/Federal institution only",
+            "5": "State/Federal + probation",
+            "6": "Local + State/Federal, no probation",
+            "7": "Local + State/Federal + probation",
+            "8": "State/Federal + local + probation",
+            "9": "Data not available"
+        }
+        df["PrevCriminalRecordLabel"] = (
+            clean_unknown(df["PrevCriminalRecord"])
+            .map(prev_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["PrevCriminalRecordLabel"] = ""
 
-    # 18) CommitmentsProbation (numeric)
-    df["CommitmentsProbationNum"] = df["CommitmentsProbation"].apply(lambda x: x if pd.notna(x) else "")
+    # 18) DECODE CountryOfBirth → CountryOfBirthName (via country_map.json)
+    if "CountryOfBirth" in df.columns:
+        df["CountryOfBirthName"] = (
+            clean_unknown(df["CountryOfBirth"])
+            .map(country_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["CountryOfBirthName"] = ""
 
-    # 19) FinesSuspensions (numeric)
-    df["FinesSuspensionsNum"] = df["FinesSuspensions"].apply(lambda x: x if pd.notna(x) else "")
+    # 19) YearEnteredUS (numeric) → YearEnteredUSNum (already present)
+    if "YearEnteredUS" in df.columns:
+        df["YearEnteredUSNum"] = df["YearEnteredUS"].apply(lambda x: x if pd.notna(x) else "")
+    else:
+        df["YearEnteredUSNum"] = ""
 
-    # 20) TimeSpanEarliestAdultRecord (numeric)
-    df["TimeSpanEarliestAdultRecordNum"] = df["TimeSpanEarliestAdultRecord"].apply(lambda x: x if pd.notna(x) else "")
+    # 20) DECODE NaturalizationStatus → NaturalizationStatusLabel (per codebook)
+    if "NaturalizationStatus" in df.columns:
+        nat_map = {
+            "1": "Alien",
+            "5": "First papers only",
+            "6": "Naturalized via military service",
+            "7": "Naturalized (not via military)",
+            "8": "Foreign-born U.S. citizen",
+            "9": "Not stated",
+            "-": "Not stated"
+        }
+        df["NaturalizationStatusLabel"] = (
+            clean_unknown(df["NaturalizationStatus"])
+            .map(nat_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["NaturalizationStatusLabel"] = ""
 
-    # 21) MinorPoliceContacts (numeric)
-    df["MinorPoliceContactsNum"] = df["MinorPoliceContacts"].apply(lambda x: x if pd.notna(x) else "")
+    # 21) DECODE PsychiatricClassification → PsychiatricClassificationLabel (via psych_map.json)
+    if "PsychiatricClassification" in df.columns:
+        df["PsychiatricClassificationLabel"] = (
+            clean_unknown(df["PsychiatricClassification"])
+            .map(psych_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["PsychiatricClassificationLabel"] = ""
 
-    # 22) SeriousPoliceContacts (numeric)
-    df["SeriousPoliceContactsNum"] = df["SeriousPoliceContacts"].apply(lambda x: x if pd.notna(x) else "")
+    # 22) DECODE InstitutionOriginal → InstitutionOriginalName (via institution_map.json)
+    if "InstitutionOriginal" in df.columns:
+        df["InstitutionOriginalName"] = (
+            clean_unknown(df["InstitutionOriginal"])
+            .map(institution_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["InstitutionOriginalName"] = ""
 
-    # 23) DECODE CountryOfBirth → CountryOfBirthName
-    df["CountryOfBirthName"] = (
-        clean_unknown(df["CountryOfBirth"])
-        .map(country_map)
-        .fillna("Unknown")
-    )
+    # 23) OriginalMonthYear (MYY) → parse & pivot to “YYYY-MM”
+    if "OriginalMonthYear" in df.columns:
+        df["_RAW_OMY"] = df["OriginalMonthYear"].apply(lambda x: parse_iso_date(x, "MYY"))
+        df["OriginalMonthYear"] = df["_RAW_OMY"].apply(pivot_month_year)
+        df.drop(columns=["_RAW_OMY"], inplace=True)
+    else:
+        df["OriginalMonthYear"] = ""
 
-    # 24) YearEnteredUS (numeric)
-    df["YearEnteredUSNum"] = df["YearEnteredUS"].apply(lambda x: x if pd.notna(x) else "")
+    # 24) MentalHygieneID (numeric string) → MentalHygieneIDNum
+    if "MentalHygieneID" in df.columns:
+        df["MentalHygieneIDNum"] = df["MentalHygieneID"].apply(lambda x: x if pd.notna(x) else "")
+    else:
+        df["MentalHygieneIDNum"] = ""
 
-    # 25) NaturalizationStatus → “Naturalized”/“Not naturalized”
-    df["NaturalizationStatusLabel"] = (
-        clean_unknown(df["NaturalizationStatus"])
-        .map({"Y": "Naturalized", "N": "Not naturalized"})
-        .fillna("Unknown")
-    )
+    # 25) DECODE ReturnType → ReturnTypeLabel (via return_type_map.json)
+    if "ReturnType" in df.columns:
+        df["ReturnTypeLabel"] = (
+            clean_unknown(df["ReturnType"])
+            .map(return_type_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["ReturnTypeLabel"] = ""
 
-    # 26) DECODE PsychiatricClassification → PsychiatricClassificationLabel
-    df["PsychiatricClassificationLabel"] = (
-        clean_unknown(df["PsychiatricClassification"])
-        .map(psych_map)
-        .fillna("Unknown")
-    )
+    # 26) DECODE CurrentInstitution → CurrentInstitutionName (via institution_map.json)
+    if "CurrentInstitution" in df.columns:
+        df["CurrentInstitutionName"] = (
+            clean_unknown(df["CurrentInstitution"])
+            .map(institution_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["CurrentInstitutionName"] = ""
 
-    # 27) DECODE InstitutionOriginal → InstitutionOriginalName
-    df["InstitutionOriginalName"] = (
-        clean_unknown(df["InstitutionOriginal"])
-        .map(institution_map)
-        .fillna("Unknown")
-    )
+    # 27) DECODE CrimeAttempted → CrimeAttemptedLabel (0 = Completed, 1 = Attempted)
+    if "CrimeAttempted" in df.columns:
+        attempt_map = {"0": "Completed", "1": "Attempted"}
+        df["CrimeAttemptedLabel"] = (
+            clean_unknown(df["CrimeAttempted"])
+            .map(attempt_map)
+            .fillna("Unknown")
+        )
+    else:
+        df["CrimeAttemptedLabel"] = ""
 
-    # 28) OriginalMonthYear (MYY) → parse & pivot to “YYYY-MM”
-    df["_RAW_OMY"] = df["OriginalMonthYear"].apply(lambda x: parse_iso_date(x, "MYY"))
-    df["OriginalMonthYear"] = df["_RAW_OMY"].apply(pivot_month_year)
-    df.drop(columns=["_RAW_OMY"], inplace=True)
+    # 28) DECODE MinSentence & MaxSentence if needed (combine years/months or special codes)
+    def decode_sentence_years_months(y: str, m: str) -> str:
+        # y and m are raw strings; handle special codes first
+        if not isinstance(y, str) or not isinstance(m, str):
+            return ""
+        # Death/indeterminate if month part is '&&&'
+        if m == "&&&":
+            return "Death/Indeterminate"
+        # 100+ years if y == '999'
+        if y == "999":
+            return "100+ years"
+        # Transfer/Indeterminate if y starts with '92' or '95'
+        if y.startswith("92") or y.startswith("95"):
+            return "Transfer/Indeterminate"
+        try:
+            yy = int(y)
+        except:
+            return ""
+        if m == "T":
+            mm = 10
+        elif m == "E":
+            mm = 11
+        else:
+            try:
+                mm = int(m)
+            except:
+                mm = 0
+        parts = []
+        if yy > 0:
+            parts.append(f"{yy} yr{'s' if yy != 1 else ''}")
+        if mm > 0:
+            parts.append(f"{mm} mo{'s' if mm != 1 else ''}")
+        return ", ".join(parts) or "0 months"
 
-    # 29) MentalHygieneID (numeric string)
-    df["MentalHygieneIDNum"] = df["MentalHygieneID"].apply(lambda x: x if pd.notna(x) else "")
+    if "MinSentence" in df.columns or "MinSentenceYears" in df.columns:
+        # If numeric years/months fields exist, map accordingly; else fallback
+        def get_min_sen_label(row):
+            if "MinSentenceYears" in df.columns and "MinSentenceMonths" in df.columns:
+                return decode_sentence_years_months(
+                    row["MinSentenceYears"], row["MinSentenceMonths"]
+                )
+            elif "MinSentence" in df.columns:
+                return decode_sentence_years_months(row["MinSentence"], "")
+            else:
+                return ""
 
-    # 30) DECODE ReturnType → ReturnTypeLabel
-    df["ReturnTypeLabel"] = (
-        clean_unknown(df["ReturnType"])
-        .map(return_type_map)
-        .fillna("Unknown")
-    )
+        df["MinSentenceLabel"] = df.apply(get_min_sen_label, axis=1)
+    else:
+        df["MinSentenceLabel"] = ""
 
-    # 31) DECODE CurrentInstitution → CurrentInstitutionName
-    df["CurrentInstitutionName"] = (
-        clean_unknown(df["CurrentInstitution"])
-        .map(institution_map)
-        .fillna("Unknown")
-    )
+    if "MaxSentence" in df.columns or "MaxSentenceYears" in df.columns:
+        def get_max_sen_label(row):
+            if "MaxSentenceYears" in df.columns and "MaxSentenceMonths" in df.columns:
+                return decode_sentence_years_months(
+                    row["MaxSentenceYears"], row["MaxSentenceMonths"]
+                )
+            elif "MaxSentence" in df.columns:
+                return decode_sentence_years_months(row["MaxSentence"], "")
+            else:
+                return ""
 
-    # -----------------------------------------------------------------------------
+        df["MaxSentenceLabel"] = df.apply(get_max_sen_label, axis=1)
+    else:
+        df["MaxSentenceLabel"] = ""
+
+    # -------------------------------------------------------------------------
     # FINAL: Assemble a DataFrame containing ONLY the decoded columns, in logical order
-    # -----------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     decoded = df[
         [
-            "Institution",                  # from ReceivingInstitutionCode
-            "County",                       # from CountyCommittedFrom
-            "CourtCommittedByName",         # from CourtCommittedBy
-            "Crime",                        # from CrimeDetails
-            "DateOfBirth",                  # pivoted to YYYY-MM-DD
-            "DateReceived",                 # pivoted to YYYY-MM-DD
-            "MinSentence",                  # raw string (e.g. “000” = 0 months)
-            "MaxSentence",                  # raw
-            "AgeAtCommitment",              # as string
-            "RaceName",                     # decoded
-            "ReligionName",                 # decoded
-            "SexName",                      # decoded
-            "IdentifierNumber",             # raw ID
-            "CheckDigit",                   # raw
-            "YearsResidenceNY",             # as string
-            "MilitaryServiceYN",            # “Yes”/“No”
-            "EducationLevel",               # raw (or map with edu_map.json)
-            "OccupationCode",               # raw
-            "NarcoticsUseYN",               # “Yes”/“No”
-            "MaritalStatusCode",            # raw
-            "PrevCriminalRecordYN",         # “Yes”/“No”
-            "CommitmentsProbationNum",      # as string
-            "FinesSuspensionsNum",          # as string
-            "TimeSpanEarliestAdultRecordNum", # as string
-            "MinorPoliceContactsNum",       # as string
-            "SeriousPoliceContactsNum",     # as string
-            "CountryOfBirthName",           # decoded
-            "YearEnteredUSNum",             # as string
-            "NaturalizationStatusLabel",    # decoded
-            "PsychiatricClassificationLabel", # decoded
-            "InstitutionOriginalName",      # decoded
-            "OriginalMonthYear",            # pivoted to YYYY-MM
-            "MentalHygieneIDNum",           # as string
-            "ReturnTypeLabel",              # decoded
-            "LatestReleaseDate",            # YYYY-MM
-            "LatestReturnDate",             # YYYY-MM-DD
-            "CurrentInstitutionName"        # decoded
+            "Institution",                    # from ReceivingInstitutionCode
+            "County",                         # from CountyCommittedFrom
+            "CourtCommittedByName",           # per codebook
+            "Crime",                          # from CrimeDetails
+            "CrimeAttemptedLabel",            # per codebook (if present)
+            "DateOfBirth",                    # pivoted to YYYY-MM-DD
+            "DateReceived",                   # kept from raw formatter
+            "MinSentenceLabel",               # decoded if available
+            "MaxSentenceLabel",               # decoded if available
+            "AgeAtCommitment",                # as string
+            "RaceName",                       # per codebook
+            "ReligionName",                   # via religion_map.json
+            "SexName",                        # via sex_map.json
+            "IdentifierNumber",               # raw ID
+            "CheckDigit",                     # raw
+            "YearsResidenceNY",               # as string
+            "MilitaryServiceLabel",           # per codebook
+            "EducationLevel",                 # per codebook
+            "OccupationName",                 # per codebook
+            "NarcoticsUseLabel",              # per codebook
+            "MaritalStatusName",              # per codebook
+            "PrevCriminalRecordLabel",        # per codebook
+            "CountryOfBirthName",             # via country_map.json
+            "YearEnteredUSNum",               # as string
+            "NaturalizationStatusLabel",      # per codebook
+            "PsychiatricClassificationLabel", # via psych_map.json
+            "InstitutionOriginalName",        # via institution_map.json
+            "OriginalMonthYear",              # pivoted to YYYY-MM
+            "MentalHygieneIDNum",             # as string
+            "ReturnTypeLabel",                # via return_type_map.json
+            "LatestReleaseDate",              # YYYY-MM
+            "LatestReturnDate",               # YYYY-MM-DD
+            "CurrentInstitutionName"          # via institution_map.json
         ]
     ]
 
